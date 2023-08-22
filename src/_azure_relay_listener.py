@@ -3,25 +3,27 @@
 import json
 import time
 from typing import Any, Optional, Tuple, cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse, urlsplit
 
 from azure.core.utils import \
     parse_connection_string as core_parse_connection_string
 from websocket import create_connection
 
 from utils import create_listener_url, generate_sas_token
+from azure.identity import DefaultAzureCredential
+
+import requests
 
 
 class HybridConnectionListener():
-    def __init__(self, listener_url: str, **kwargs: Any) -> None:
-        self.listener_url = listener_url
+    def __init__(self, fully_qualified_name: str, entity_path: str, *, sas_token:str, **kwargs: Any) -> None:
+        self.listener_url = create_listener_url(fully_qualified_name, entity_path, sas_token)
 
     @classmethod
     def from_connection_string(cls, conn_str: str, **kwargs):
         host, policy, key, entity, token, token_expiry = cls._parse_conn_str(conn_str, **kwargs)
         token = generate_sas_token(host, entity, policy, key)
-        listener_url = create_listener_url(host, entity, token)
-        return cls(listener_url, **kwargs)
+        return cls(host, entity, sas_token = token, **kwargs)
     
     def _open(self):
         try:
@@ -149,7 +151,25 @@ class HybridConnectionListener():
     
 
 if __name__ == "__main__":
-    conn_str = ''
-    listener = HybridConnectionListener.from_connection_string(conn_str)
+    connection_details_url = ''
+    cred = DefaultAzureCredential()
+    resp = requests.post(url=connection_details_url, headers= {'Authorization': f'Bearer {cred.get_token("https://management.core.windows.net").token}'})
+
+    if resp.status_code != 200:
+        raise Exception(f"Failed to get connection details from {connection_details_url}")
+    
+    response_json = resp.json()
+
+    session_id = response_json['sessionId']
+
+    connection_details = response_json['connectionDetails']
+
+    sas_token = connection_details['sharedAccessSignature']
+    endpoint_info = urlsplit(connection_details['endPoint'])
+
+    fqn = endpoint_info.hostname
+    entity_path = endpoint_info.path[1:]
+
+    listener = HybridConnectionListener(fqn,entity_path,sas_token=sas_token)
     print(listener.listener_url)
     listener.receive(None)
