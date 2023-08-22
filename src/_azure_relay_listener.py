@@ -3,16 +3,15 @@
 import json
 import time
 from typing import Any, Optional, Tuple, cast
-from urllib.parse import quote, urlencode, urlparse, urlsplit
+from urllib.parse import urlparse, urlsplit
 
+import requests
 from azure.core.utils import \
     parse_connection_string as core_parse_connection_string
+from azure.identity import DefaultAzureCredential
 from websocket import create_connection
 
 from utils import create_listener_url, generate_sas_token
-from azure.identity import DefaultAzureCredential
-
-import requests
 
 
 class HybridConnectionListener():
