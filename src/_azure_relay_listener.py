@@ -1,17 +1,16 @@
-
-
 import json
 import time
 from typing import Any, Optional, Tuple, cast
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 
-import requests
 from azure.core.utils import \
     parse_connection_string as core_parse_connection_string
-from azure.identity import DefaultAzureCredential
 from websocket import create_connection
 
 from utils import create_listener_url, generate_sas_token
+
+import logging
+LOG = logging.getLogger(__name__)
 
 
 class HybridConnectionListener():
@@ -27,6 +26,7 @@ class HybridConnectionListener():
     def _open(self):
         try:
             self.control_conn = create_connection(self.listener_url)
+            LOG.debug(f"Connected to control websocket {self.listener_url}")
         except Exception as e:
             raise Exception(f"Failed to connect to {self.listener_url}") from e
 
@@ -37,16 +37,20 @@ class HybridConnectionListener():
         command = json.loads(request)
 
         if 'accept' in command:
+            LOG.debug(f"Received accept from control websocket")
             request = command['accept']
             try:
                 rendezvous_conn = create_connection(request['address'])
+                LOG.debug(f"Connected to rendezvous websocket {request['address']}")
             except Exception as e:
                 raise Exception(f"Failed to connect to {request['address']}") from e
             
             while True:
+                LOG.debug(f"Waiting for data from rendezvous websocket")
                 data = rendezvous_conn.recv()
 
                 if data:
+                    LOG.debug(f"Received data from rendezvous websocket")
                     print(data.decode('utf-8'))
 
                 response = {
@@ -60,9 +64,7 @@ class HybridConnectionListener():
                 response_str = json.dumps({'response':response})
 
                 rendezvous_conn.send(response_str)
-
-                response_str = "Hello from python"
-                rendezvous_conn.send(response_str.encode('utf-8'))
+                LOG.debug(f"Sent response ack to rendezvous websocket")
         
 
     @staticmethod
@@ -147,28 +149,3 @@ class HybridConnectionListener():
             str(shared_access_signature) if shared_access_signature else None,
             shared_access_signature_expiry,
         )
-    
-
-if __name__ == "__main__":
-    connection_details_url = ''
-    cred = DefaultAzureCredential()
-    resp = requests.post(url=connection_details_url, headers= {'Authorization': f'Bearer {cred.get_token("https://management.core.windows.net").token}'})
-
-    if resp.status_code != 200:
-        raise Exception(f"Failed to get connection details from {connection_details_url}")
-    
-    response_json = resp.json()
-
-    session_id = response_json['sessionId']
-
-    connection_details = response_json['connectionDetails']
-
-    sas_token = connection_details['sharedAccessSignature']
-    endpoint_info = urlsplit(connection_details['endPoint'])
-
-    fqn = endpoint_info.hostname
-    entity_path = endpoint_info.path[1:]
-
-    listener = HybridConnectionListener(fqn,entity_path,sas_token=sas_token)
-    print(listener.listener_url)
-    listener.receive(None)
