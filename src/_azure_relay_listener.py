@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from typing import Any, Optional, Tuple, cast
 from urllib.parse import urlparse
@@ -16,6 +17,9 @@ LOG = logging.getLogger(__name__)
 class HybridConnectionListener():
     def __init__(self, fully_qualified_name: str, entity_path: str, *, sas_token:str, **kwargs: Any) -> None:
         self.listener_url = create_listener_url(fully_qualified_name, entity_path, sas_token)
+        self.ping_interval = 5
+        self.ping_thread = None
+        self.send_ping = True
 
     @classmethod
     def from_connection_string(cls, conn_str: str, **kwargs):
@@ -23,48 +27,73 @@ class HybridConnectionListener():
         token = generate_sas_token(host, entity, policy, key)
         return cls(host, entity, sas_token = token, **kwargs)
     
+    def _send_ping(self):
+        while self.send_ping:
+            try:
+                self.control_conn.ping()
+                LOG.debug(f"Sent ping to control websocket {self.listener_url}")
+            except Exception as e:
+                self.control_conn.close()
+                raise Exception(f"Failed to send ping to {self.listener_url}") from e
+            time.sleep(self.ping_interval)
+
+    def close(self):
+        self.send_ping = False
+        self.control_conn.close()
+        self.ping_thread.join()
+        LOG.debug(f"Closed control websocket {self.listener_url}")
+
     def _open(self):
         try:
             self.control_conn = create_connection(self.listener_url)
             LOG.debug(f"Connected to control websocket {self.listener_url}")
+            self.ping_thread = threading.Thread(target=self._send_ping, daemon=True)
+            self.ping_thread.start()
         except Exception as e:
             raise Exception(f"Failed to connect to {self.listener_url}") from e
 
     
     def receive(self, on_message_received, **kwargs):
         self._open()
-        request = self.control_conn.recv()
-        command = json.loads(request)
 
-        if 'accept' in command:
-            LOG.debug(f"Received accept from control websocket")
-            request = command['accept']
-            try:
-                rendezvous_conn = create_connection(request['address'])
-                LOG.debug(f"Connected to rendezvous websocket {request['address']}")
-            except Exception as e:
-                raise Exception(f"Failed to connect to {request['address']}") from e
+        keep_running = True
+        from_rendezvous = False
+        rendezvous_conn = None
+
+        while keep_running:
+            response = self.control_conn.recv()
             
-            while True:
-                LOG.debug(f"Waiting for data from rendezvous websocket")
-                data = rendezvous_conn.recv()
+            request = json.loads(response)["request"]
 
-                if data:
-                    LOG.debug(f"Received data from rendezvous websocket")
-                    print(data.decode('utf-8'))
+            if request:
+                LOG.debug(f"Received request from control websocket")
+                if 'method' not in request: # This means we have to rendezvous to get the rest
+                    LOG.debug(f"connecting to rendezvous websocket")
+                    rendezvous_conn = create_connection(request['address'])
+                    rendezvous_resp = rendezvous_conn.recv()
+                    command = json.loads(rendezvous_resp)
+                    request = command['request']
+                    from_rendezvous = True
+                
+                if request['body']:
+                    event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
+                    print(event.decode('utf-8'))
 
                 response = {
                     'requestId': request['id'],
+                    'body': True,
                     'statusCode': '200',
-                    'responseHeaders': {
-                        'content-type': 'text/html',
-                    }
+                    'responseHeaders': {'content-type': 'text/html'},
                 }
+                if not from_rendezvous: #TODO if response is over 64kb we need to use rendezvous
+                    self.control_conn.send(json.dumps({'response':response}))
+                else:
+                    rendezvous_conn.send(json.dumps({'response':response}))
 
-                response_str = json.dumps({'response':response})
-
-                rendezvous_conn.send(response_str)
-                LOG.debug(f"Sent response ack to rendezvous websocket")
+                if rendezvous_conn:
+                    rendezvous_conn.close()
+                    rendezvous_conn = None
+                    from_rendezvous = False
         
 
     @staticmethod
