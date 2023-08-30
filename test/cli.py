@@ -19,7 +19,7 @@ if __name__ == "__main__":
     import azure.mgmt.storage
     from azure.mgmt.storage.models import StorageAccountCreateParameters
 
-    client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), 'faa080af-c1d8-40ad-9cce-e1a450ca5b57', session='12345', logging_enable=True)
+    client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), '', session='12345', logging_enable=True)
     
 
 
