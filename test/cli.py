@@ -1,36 +1,35 @@
 from azure.identity import DefaultAzureCredential
-import requests
+
 from urllib.parse import urlsplit
 
-from _azure_relay_listener import HybridConnectionListener
+from listenerdemo import apply_dark_magic, HybridConnectionListener
 
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
+import requests
+
 
 
 
 if __name__ == "__main__":
-    connection_details_url = 'https://arn-cuseuap-nt.arn.core.windows.net/providers/Microsoft.ResourceNotifications/ephemeralEventsSubscription/ephemeralEventsSubscriptionID/getConnectionDetails?api-version=2023-08-01-Preview'
-    cred = DefaultAzureCredential()
-    resp = requests.post(url=connection_details_url, headers= {'Authorization': f'Bearer {cred.get_token("https://management.core.windows.net").token}'})
+    apply_dark_magic()
 
-    if resp.status_code != 200:
-        raise Exception(f"Failed to get connection details from {connection_details_url}")
+    import azure.mgmt.storage
+    from azure.mgmt.storage.models import StorageAccountCreateParameters
+
+    client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), 'faa080af-c1d8-40ad-9cce-e1a450ca5b57', session='12345', logging_enable=True)
     
-    response_json = resp.json()
 
-    session_id = response_json['sessionId']
 
-    connection_details = response_json['connectionDetails']
+    # listener = HybridConnectionListener(fqn,entity_path,sas_token=sas_token)
+    # print(listener.listener_url)
+    # listener.receive(None)
 
-    sas_token = connection_details['sharedAccessSignature']
-    endpoint_info = urlsplit(connection_details['endPoint'])
-
-    fqn = endpoint_info.hostname
-    entity_path = endpoint_info.path[1:]
-
-    listener = HybridConnectionListener(fqn,entity_path,sas_token=sas_token)
-    print(listener.listener_url)
-    listener.receive(None)
+    # This needs to look like the following code
+    # read the poc lightning doc for more info
+    # user creaters a mgmt client and passed in a session kwarg. 
+    # that kwarg is used to fire off steps 15 - 29
+    # the client will then do LRO type activities such as creating a storage account
+    # then iterate over the lro results ---> should come from relay instead of polling
