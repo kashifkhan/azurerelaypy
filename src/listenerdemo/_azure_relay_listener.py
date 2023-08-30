@@ -8,7 +8,7 @@ from azure.core.utils import \
     parse_connection_string as core_parse_connection_string
 from websocket import create_connection
 
-from utils import create_listener_url, generate_sas_token
+from .utils import create_listener_url, generate_sas_token
 
 import logging
 LOG = logging.getLogger(__name__)
