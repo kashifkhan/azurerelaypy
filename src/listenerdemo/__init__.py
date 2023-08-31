@@ -1,9 +1,10 @@
 from urllib.parse import urlsplit
-from ._azure_relay_listener import HybridConnectionListener
+from ._azure_relay_listener import HybridConnectionListener, RelayPollingMethod
 import typing
 import requests
 
 
+from azure.core.polling import LROPoller
 from azure.core.polling.base_polling import LROBasePolling
 from azure.mgmt.core.polling.arm_polling import ARMPolling
 from azure.core.rest import HttpRequest
@@ -34,10 +35,21 @@ def make_notification_session_aware(client_type):
                 response_json = resp.json()
                 session_id = response_json['sessionId']
                 connection_details = response_json['connectionDetails']
-                sas_token = connection_details['sharedAccessSignature']
+                self.sas_token = connection_details['sharedAccessSignature']
                 endpoint_info = urlsplit(connection_details['endPoint'])
-                fqn = endpoint_info.hostname
-                entity_path = endpoint_info.path[1:]
+                self.fully_qualified_name = endpoint_info.hostname
+                self.entity_path = endpoint_info.path[1:]
+                #self.virtual_machines.begin_create_or_update = self.begin_create_or_update
+        
+        def begin_create_or_update(self, *args, **kwargs):
+            polling_method = RelayPollingMethod(self.fully_qualified_name, self.entity_path, self.sas_token)
+            pipeline_response = "200" # lets pretend we send off a request
+            return LROPoller(
+                client=self,
+                initial_response=pipeline_response,
+                deserialization_callback=lambda x: x,
+                polling_method=polling_method,
+            )
     return SessionManagementClient
 
 def apply_dark_magic():
@@ -46,3 +58,6 @@ def apply_dark_magic():
 
     import azure.mgmt.storage
     azure.mgmt.storage.StorageManagementClient = make_notification_session_aware(azure.mgmt.storage.StorageManagementClient)
+
+    import azure.mgmt.compute
+    azure.mgmt.compute.ComputeManagementClient = make_notification_session_aware(azure.mgmt.compute.ComputeManagementClient)

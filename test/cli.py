@@ -16,10 +16,13 @@ import requests
 if __name__ == "__main__":
     apply_dark_magic()
 
-    import azure.mgmt.storage
-    from azure.mgmt.storage.models import StorageAccountCreateParameters
+    import azure.mgmt.compute
+    #from azure.mgmt.storage.models import StorageAccountCreateParameters
 
-    client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), '', session='12345', logging_enable=True)
+    client = azure.mgmt.compute.ComputeManagementClient(DefaultAzureCredential(), '', session='12345', logging_enable=True)
+    lro = client.begin_create_or_update('rg', 'vm', 'params')
+    print(lro.result())
+
     
 
 
