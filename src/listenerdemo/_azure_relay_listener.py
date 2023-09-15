@@ -4,7 +4,6 @@ import time
 from typing import Any, MutableMapping, Optional, Tuple, cast, Callable
 from urllib.parse import urlparse
 from azure.core.pipeline import PipelineResponse
-from azure.core.polling._poller import DeserializationCallbackType
 
 from azure.core.utils import \
     parse_connection_string as core_parse_connection_string
@@ -45,9 +44,10 @@ class RelayPollingStrategy(LongRunningOperation):
 class RelayPollingMethod(PollingMethod):
     def __init__(self, fully_qualified_name: str, entity_path: str, sas_token:str, **kwargs: Any) -> None:
         self.listener_url = create_listener_url(fully_qualified_name, entity_path, sas_token)
-        self.ping_interval = 5
+        self.ping_interval = 20
         self.ping_thread = None
         self.send_ping = True
+        self.stop_event = threading.Event()
     
     def _send_ping(self):
         while self.send_ping:
@@ -57,7 +57,9 @@ class RelayPollingMethod(PollingMethod):
             except Exception as e:
                 self.control_conn.close()
                 raise Exception(f"Failed to send ping to {self.listener_url}") from e
-            time.sleep(self.ping_interval)
+            LOG.debug("Sleeping")
+            self.stop_event.wait(self.ping_interval)
+        #LOG.debug("send ping is now false")
 
     def initialize(self, client: Any, initial_response: Any, deserialization_callback: Callable) -> None:
         try:
@@ -88,13 +90,15 @@ class RelayPollingMethod(PollingMethod):
     def resource(self) -> JSON:
         return self._deserialization_callback(self._resource)
     
-    def run(self) -> None:
+    def run(self, event) -> None:
         while not self.finished():
-            self.update_status()
+            self.update_status(event)
             
-    def update_status(self):
+    def update_status(self, event_thread) -> None:
         from_rendezvous = False
         response = self.control_conn.recv()
+
+        #response2 = self.control_conn.recv()
             
         request = json.loads(response)["request"]
         if request:
@@ -119,6 +123,7 @@ class RelayPollingMethod(PollingMethod):
             }
             if not from_rendezvous: #TODO if response is over 64kb we need to use rendezvous
                 self.control_conn.send(json.dumps({'response':response}))
+                LOG.debug(f"Sent response to control websocket")
             else:
                 self.rendezvous_conn.send(json.dumps({'response':response}))
             if self.rendezvous_conn:
@@ -128,9 +133,14 @@ class RelayPollingMethod(PollingMethod):
             
         self.status = "Succeeded"
         self.send_ping = False
+        self.stop_event.set()
+        LOG.debug(f"Closing ping")
         self.ping_thread.join()
+        LOG.debug(f"closed ping")
         self.control_conn.close()
         LOG.debug(f"Closed control websocket {self.listener_url}")
+        LOG.debug("Setting event")
+        event_thread.set()
         
 
 
