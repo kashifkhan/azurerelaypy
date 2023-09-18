@@ -148,9 +148,12 @@ class RelayPollingMethod(PollingMethod):
 class HybridConnectionListener():
     def __init__(self, fully_qualified_name: str, entity_path: str, *, sas_token:str, **kwargs: Any) -> None:
         self.listener_url = create_listener_url(fully_qualified_name, entity_path, sas_token)
-        self.ping_interval = 5
+        self.ping_interval = 20
         self.ping_thread = None
         self.send_ping = True
+        self.notification_lock = threading.Lock()
+        self.notification = {}
+
 
     @classmethod
     def from_connection_string(cls, conn_str: str, **kwargs):
@@ -174,18 +177,21 @@ class HybridConnectionListener():
         self.ping_thread.join()
         LOG.debug(f"Closed control websocket {self.listener_url}")
 
-    def _open(self):
+    def open(self):
         try:
             self.control_conn = create_connection(self.listener_url)
             LOG.debug(f"Connected to control websocket {self.listener_url}")
             self.ping_thread = threading.Thread(target=self._send_ping, daemon=True)
             self.ping_thread.start()
+            LOG.debug("Listening for notifications")
+            self.notification_thread = threading.Thread(target=self._receive, daemon=True)
+            self.notification_thread.start()
         except Exception as e:
             raise Exception(f"Failed to connect to {self.listener_url}") from e
 
     
-    def receive(self, on_message_received, **kwargs):
-        self._open()
+    def _receive(self, **kwargs):
+        #self._open()
 
         keep_running = True
         from_rendezvous = False
@@ -208,7 +214,18 @@ class HybridConnectionListener():
                 
                 if request['body']:
                     event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
-                    print(event.decode('utf-8'))
+                    json_event = json.loads(event)
+                    if 'operationalInfo' in json_event[0]['data']:
+                        id = f"{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[1]}/{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[2]}"
+                        LOG.debug(f"Received an event for {id}")
+                        print("EVENT")
+                        print(json_event)
+                        with self.notification_lock:
+                            LOG.debug(f"storing notification for {id}")
+                            if id in self.notification:
+                                wait_event = self.notification[id]
+                            self.notification[id] = event
+                            wait_event.set()
 
                 response = {
                     'requestId': request['id'],
@@ -221,10 +238,32 @@ class HybridConnectionListener():
                 else:
                     rendezvous_conn.send(json.dumps({'response':response}))
 
+                #with self.notification_lock:
+
+
                 if rendezvous_conn:
                     rendezvous_conn.close()
                     rendezvous_conn = None
                     from_rendezvous = False
+
+    def wait(self, id, timeout=None):
+
+        with self.notification_lock:
+            if id in self.notification:
+                LOG.debug(f"notitication was already received for {id}")
+                return self.notification[id]
+            else:
+                LOG.debug(f"notification was not received yet {id}")
+                wait_event = threading.Event()
+                self.notification[id] = wait_event
+            
+        LOG.debug(f"waiting for notification {id}")
+        wait_event.wait(timeout)
+        with self.notification_lock:
+            if isinstance(self.notification[id], threading.Event):
+                return None
+            return self.notification[id]
+
         
 
     @staticmethod
