@@ -1,0 +1,4 @@
+azure-identity
+azure-mgmt-compute
+azure-mgmt-storage
+python-dotenv
