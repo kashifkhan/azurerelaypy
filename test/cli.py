@@ -19,11 +19,12 @@ load_dotenv(find_dotenv())
 
 if __name__ == "__main__":
     apply_dark_magic()
-
-    import azure.mgmt.compute
     subscription_id = os.environ['SUBSCRIPTION_ID']
     base_url = os.environ['BASE_URL']
     session_id = os.environ['SESSION_ID']
+
+    # import azure.mgmt.compute
+   
     # client = azure.mgmt.compute.ComputeManagementClient(
     #     DefaultAzureCredential(), subscription_id, session=session_id, base_url=base_url
     # )
@@ -80,12 +81,28 @@ if __name__ == "__main__":
 
     import azure.mgmt.storage
     from azure.mgmt.storage.models import StorageAccountCreateParameters
+    from datetime import datetime, timezone
 
+    
     client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), subscription_id, session=session_id, base_url=base_url)
+    
+    
     parameters = StorageAccountCreateParameters(sku={'name': 'Premium_LRS'}, kind='Storage', location='centralus')
 
-    lro = client.storage_accounts.begin_create('amduatest', f'amduatestlistenerdemo', parameters=parameters, headers={
-            "x-ms-operation-identifier": f"lightning={client.session_id}/{uuid.uuid4()}"
-        })
+    client._client.time_sent = datetime.now(timezone.utc)
+    lros = []
 
-    print(lro.result())
+    for i in range(10):
+        lros.append(client.storage_accounts.begin_create('amduatest', f'amduatestlistenerdemo{i}', parameters=parameters,headers={
+             "x-ms-operation-identifier": f"lightning={client.session_id}/{uuid.uuid4()}"
+         }))
+    
+    
+    for lro in lros:
+        print(lro.result())
+
+    client.close()
+    print(f'total time {(client._client.event_time - client._client.time_sent).seconds} seconds')
+    print(f'total time {(datetime.now(timezone.utc) - client._client.time_sent).seconds} seconds')
+
+    

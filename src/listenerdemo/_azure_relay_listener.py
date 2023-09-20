@@ -181,11 +181,11 @@ class HybridConnectionListener():
         try:
             self.control_conn = create_connection(self.listener_url)
             LOG.debug(f"Connected to control websocket {self.listener_url}")
-            self.ping_thread = threading.Thread(target=self._send_ping, daemon=True)
-            self.ping_thread.start()
             LOG.debug("Listening for notifications")
             self.notification_thread = threading.Thread(target=self._receive, daemon=True)
             self.notification_thread.start()
+            self.ping_thread = threading.Thread(target=self._send_ping, daemon=True)
+            self.ping_thread.start()
         except Exception as e:
             raise Exception(f"Failed to connect to {self.listener_url}") from e
 
@@ -215,17 +215,17 @@ class HybridConnectionListener():
                 if request['body']:
                     event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
                     json_event = json.loads(event)
+                    wait_event = None
                     if 'operationalInfo' in json_event[0]['data']:
                         id = f"{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[1]}/{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[2]}"
                         LOG.debug(f"Received an event for {id}")
-                        print("EVENT")
-                        print(json_event)
                         with self.notification_lock:
                             LOG.debug(f"storing notification for {id}")
                             if id in self.notification:
                                 wait_event = self.notification[id]
-                            self.notification[id] = event
-                            wait_event.set()
+                            self.notification[id] = json_event
+                            if wait_event:
+                                wait_event.set()
 
                 response = {
                     'requestId': request['id'],

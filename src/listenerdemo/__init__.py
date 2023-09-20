@@ -1,18 +1,13 @@
 import logging
-import threading
-from typing import Any, Callable, Dict, Optional, Sequence
+from datetime import datetime
+from typing import Any
 from urllib.parse import urlsplit
-from azure.core._pipeline_client import PipelineClient
-from azure.core.pipeline import PipelineResponse
 
 import requests
-from azure.core.polling import LROPoller
-from azure.core.polling.base_polling import (LongRunningOperation,
-                                             LROBasePolling)
-
+from azure.core.polling.base_polling import LROBasePolling
 from azure.mgmt.core.polling.arm_polling import ARMPolling
 
-from ._azure_relay_listener import HybridConnectionListener, RelayPollingMethod
+from ._azure_relay_listener import HybridConnectionListener
 
 LOG = logging.getLogger(__name__)
 
@@ -33,7 +28,9 @@ class RelayArmPollerMixin(LROBasePolling):
         if self.use_relay:
             id = self._initial_response.http_request.headers['x-ms-operation-identifier']
             LOG.debug(f"Waiting for relay to fire for {id}")
-            notification = self._client.hybrid_connection_listener.wait(id, 20)
+            notification = self._client.hybrid_connection_listener.wait(id, 60)
+            self._client.event_time = datetime.fromisoformat(notification[0]['eventTime'])
+            #self._client.event_time = dateutil.parser.isoparse(notification[0]['eventTime'])
             if notification is None:
                 LOG.debug(f"Relay did not fire for {id}, falling back polling")
                 self.use_relay = False
