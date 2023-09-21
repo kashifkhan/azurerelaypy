@@ -1,36 +1,108 @@
-from azure.identity import DefaultAzureCredential
-import requests
-from urllib.parse import urlsplit
-
-from _azure_relay_listener import HybridConnectionListener
-
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
+import uuid
+import sys
+from azure.identity import DefaultAzureCredential
 
+from listenerdemo import apply_dark_magic
 
+from dotenv import load_dotenv, find_dotenv
+import os
+
+logger = logging.getLogger('listenerdemo')
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(stream=sys.stdout)
+logger.addHandler(handler)
+
+load_dotenv(find_dotenv())
 
 
 if __name__ == "__main__":
-    connection_details_url = 'https://arn-cuseuap-nt.arn.core.windows.net/providers/Microsoft.ResourceNotifications/ephemeralEventsSubscription/ephemeralEventsSubscriptionID/getConnectionDetails?api-version=2023-08-01-Preview'
-    cred = DefaultAzureCredential()
-    resp = requests.post(url=connection_details_url, headers= {'Authorization': f'Bearer {cred.get_token("https://management.core.windows.net").token}'})
+    apply_dark_magic()
+    subscription_id = os.environ['SUBSCRIPTION_ID']
+    base_url = os.environ['BASE_URL']
+    session_id = os.environ['SESSION_ID']
 
-    if resp.status_code != 200:
-        raise Exception(f"Failed to get connection details from {connection_details_url}")
+    # import azure.mgmt.compute
+   
+    # client = azure.mgmt.compute.ComputeManagementClient(
+    #     DefaultAzureCredential(), subscription_id, session=session_id, base_url=base_url
+    # )
+    # lros = []
+    # for i in range(3):
+    #     lros.append(client.virtual_machines.begin_create_or_update(
+    #     resource_group_name="amduatest",
+    #     vm_name="lightningABC",
+    #     parameters={
+    #         "location": "centraluseuap",
+    #         "properties": {
+    #             "hardwareProfile": {"vmSize": "Standard_DS1_v2"},
+    #             "storageProfile": {
+    #                 "imageReference": {
+    #                     "publisher": "MicrosoftWindowsServer",
+    #                     "offer": "WindowsServer",
+    #                     "sku": "2016-datacenter-gensecond",
+    #                     "version": "latest",
+    #                     "exactVersion": "14393.6085.230705",
+    #                 },
+    #                 "osDisk": {
+    #                     "osType": "Windows",
+    #                     "createOption": "FromImage",
+    #                     "caching": "ReadWrite",
+    #                     "managedDisk": {"storageAccountType": "Premium_LRS"},
+    #                     "deleteOption": "Detach",
+    #                     "diskSizeGB": 127,
+    #                 },
+    #                 "dataDisks": [],
+    #             },
+    #             "osProfile": {
+    #                 "adminUsername": "AdminTestTestTest",
+    #                 "computerName": "ABC",
+    #                 "adminPassword": "<password>",
+    #             },
+    #             "networkProfile": {
+    #                 "networkInterfaces": [
+    #                     {
+    #                         "id": "/subscriptions/9de1303d-cac3-4232-9269-a7109121f58f/resourceGroups/amduatest/providers/Microsoft.Network/networkInterfaces/test123577_z1",
+    #                         "properties": {"deleteOption": "Detach"},
+    #                     }
+    #                 ]
+    #             },
+    #         },
+    #     },
+    #     headers={
+    #         "x-ms-operation-identifier": f"lightning={client.session_id}/{uuid.uuid4()}"
+    #     },
+    # ))
     
-    response_json = resp.json()
+    # for lro in lros:
+    #     print(lro.result())
 
-    session_id = response_json['sessionId']
 
-    connection_details = response_json['connectionDetails']
+    import azure.mgmt.storage
+    from azure.mgmt.storage.models import StorageAccountCreateParameters
+    from datetime import datetime, timezone
 
-    sas_token = connection_details['sharedAccessSignature']
-    endpoint_info = urlsplit(connection_details['endPoint'])
+    
+    client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), subscription_id, session=session_id, base_url=base_url)
+    
+    
+    parameters = StorageAccountCreateParameters(sku={'name': 'Premium_LRS'}, kind='Storage', location='centralus')
 
-    fqn = endpoint_info.hostname
-    entity_path = endpoint_info.path[1:]
+    client._client.time_sent = datetime.now(timezone.utc)
+    lros = []
 
-    listener = HybridConnectionListener(fqn,entity_path,sas_token=sas_token)
-    print(listener.listener_url)
-    listener.receive(None)
+    for i in range(10):
+        lros.append(client.storage_accounts.begin_create('amduatest', f'amduatestlistenerdemo{i}', parameters=parameters,headers={
+             "x-ms-operation-identifier": f"lightning={client.session_id}/{uuid.uuid4()}"
+         }))
+    
+    
+    for lro in lros:
+        print(lro.result())
+
+    client.close()
+    print(f'total time {(client._client.event_time - client._client.time_sent).seconds} seconds')
+    print(f'total time {(datetime.now(timezone.utc) - client._client.time_sent).seconds} seconds')
+
+    

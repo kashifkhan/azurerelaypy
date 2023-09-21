@@ -1,25 +1,159 @@
 import json
 import threading
 import time
-from typing import Any, Optional, Tuple, cast
+from typing import Any, MutableMapping, Optional, Tuple, cast, Callable
 from urllib.parse import urlparse
+from azure.core.pipeline import PipelineResponse
 
 from azure.core.utils import \
     parse_connection_string as core_parse_connection_string
 from websocket import create_connection
 
-from utils import create_listener_url, generate_sas_token
+from .utils import create_listener_url, generate_sas_token
+
+from azure.core.polling.base_polling import LongRunningOperation, OperationFailed
+from azure.core.polling import PollingMethod
+JSON = MutableMapping[str, Any]
 
 import logging
 LOG = logging.getLogger(__name__)
 
 
+class RelayPollingStrategy(LongRunningOperation):
+    def can_poll(self, pipeline_response: PipelineResponse) -> bool:
+        return True
+    
+    def get_polling_url(self) -> str:
+        raise NotImplementedError("The polling strategy does not need to extract a polling URL.")
+    
+    def set_initial_status(self, pipeline_response: str) -> str:
+        response = pipeline_response
+        if response == "200":
+            return "InProgress"
+        raise OperationFailed("Operation failed or cancelled.")
+    
+    def get_status(self, response: JSON) -> str:
+        if response is None:
+            return "InProgress"
+        return "Succeeded"
+    
+    def get_final_get_url(self, pipeline_response: PipelineResponse) -> Optional[str]:
+        return None
+    
+
+class RelayPollingMethod(PollingMethod):
+    def __init__(self, fully_qualified_name: str, entity_path: str, sas_token:str, **kwargs: Any) -> None:
+        self.listener_url = create_listener_url(fully_qualified_name, entity_path, sas_token)
+        self.ping_interval = 20
+        self.ping_thread = None
+        self.send_ping = True
+        self.stop_event = threading.Event()
+    
+    def _send_ping(self):
+        while self.send_ping:
+            try:
+                self.control_conn.ping()
+                LOG.debug(f"Sent ping to control websocket {self.listener_url}")
+            except Exception as e:
+                self.control_conn.close()
+                raise Exception(f"Failed to send ping to {self.listener_url}") from e
+            LOG.debug("Sleeping")
+            self.stop_event.wait(self.ping_interval)
+        #LOG.debug("send ping is now false")
+
+    def initialize(self, client: Any, initial_response: Any, deserialization_callback: Callable) -> None:
+        try:
+            self.control_conn = create_connection(self.listener_url)
+            self.rendezvous_conn = None
+            LOG.debug(f"Connected to control websocket {self.listener_url}")
+            self.ping_thread = threading.Thread(target=self._send_ping, daemon=True)
+            self.ping_thread.start()
+        except Exception as e:
+            raise Exception(f"Failed to connect to {self.listener_url}") from e
+        
+        self._initial_response = initial_response
+        self._deserialization_callback = deserialization_callback
+        self._resource = None
+        self._finished = False
+
+        self._operation = RelayPollingStrategy()
+
+        self.status = self._operation.set_initial_status("200")
+    
+    def status(self) -> str:
+        return self.status
+    
+    def finished(self) -> bool:
+        #shut down everything here
+        return True if self.status == "Succeeded" else False
+    
+    def resource(self) -> JSON:
+        return self._deserialization_callback(self._resource)
+    
+    def run(self, event) -> None:
+        while not self.finished():
+            self.update_status(event)
+            
+    def update_status(self, event_thread) -> None:
+        from_rendezvous = False
+        response = self.control_conn.recv()
+
+        #response2 = self.control_conn.recv()
+            
+        request = json.loads(response)["request"]
+        if request:
+            LOG.debug(f"Received request from control websocket")
+            if 'method' not in request: # This means we have to rendezvous to get the rest
+                LOG.debug(f"connecting to rendezvous websocket")
+                self.rendezvous_conn = create_connection(request['address'])
+                rendezvous_resp = self.rendezvous_conn.recv()
+                command = json.loads(rendezvous_resp)
+                request = command['request']
+                from_rendezvous = True
+            
+            if request['body']:
+                event = self.control_conn.recv() if not from_rendezvous else self.rendezvous_conn.recv()
+                #print(event.decode('utf-8'))
+                self._resource = event
+            response = {
+                'requestId': request['id'],
+                'body': True,
+                'statusCode': '200',
+                'responseHeaders': {'content-type': 'text/html'},
+            }
+            if not from_rendezvous: #TODO if response is over 64kb we need to use rendezvous
+                self.control_conn.send(json.dumps({'response':response}))
+                LOG.debug(f"Sent response to control websocket")
+            else:
+                self.rendezvous_conn.send(json.dumps({'response':response}))
+            if self.rendezvous_conn:
+                self.rendezvous_conn.close()
+                self.rendezvous_conn = None
+                from_rendezvous = False
+            
+        self.status = "Succeeded"
+        self.send_ping = False
+        self.stop_event.set()
+        LOG.debug(f"Closing ping")
+        self.ping_thread.join()
+        LOG.debug(f"closed ping")
+        self.control_conn.close()
+        LOG.debug(f"Closed control websocket {self.listener_url}")
+        LOG.debug("Setting event")
+        event_thread.set()
+        
+
+
+
 class HybridConnectionListener():
     def __init__(self, fully_qualified_name: str, entity_path: str, *, sas_token:str, **kwargs: Any) -> None:
         self.listener_url = create_listener_url(fully_qualified_name, entity_path, sas_token)
-        self.ping_interval = 5
+        self.ping_interval = 20
         self.ping_thread = None
         self.send_ping = True
+        self.notification_lock = threading.Lock()
+        self.notification = {}
+
 
     @classmethod
     def from_connection_string(cls, conn_str: str, **kwargs):
@@ -43,18 +177,21 @@ class HybridConnectionListener():
         self.ping_thread.join()
         LOG.debug(f"Closed control websocket {self.listener_url}")
 
-    def _open(self):
+    def open(self):
         try:
             self.control_conn = create_connection(self.listener_url)
             LOG.debug(f"Connected to control websocket {self.listener_url}")
+            LOG.debug("Listening for notifications")
+            self.notification_thread = threading.Thread(target=self._receive, daemon=True)
+            self.notification_thread.start()
             self.ping_thread = threading.Thread(target=self._send_ping, daemon=True)
             self.ping_thread.start()
         except Exception as e:
             raise Exception(f"Failed to connect to {self.listener_url}") from e
 
     
-    def receive(self, on_message_received, **kwargs):
-        self._open()
+    def _receive(self, **kwargs):
+        #self._open()
 
         keep_running = True
         from_rendezvous = False
@@ -77,7 +214,18 @@ class HybridConnectionListener():
                 
                 if request['body']:
                     event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
-                    print(event.decode('utf-8'))
+                    json_event = json.loads(event)
+                    wait_event = None
+                    if 'operationalInfo' in json_event[0]['data']:
+                        id = f"{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[1]}/{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[2]}"
+                        LOG.debug(f"Received an event for {id}")
+                        with self.notification_lock:
+                            LOG.debug(f"storing notification for {id}")
+                            if id in self.notification:
+                                wait_event = self.notification[id]
+                            self.notification[id] = json_event
+                            if wait_event:
+                                wait_event.set()
 
                 response = {
                     'requestId': request['id'],
@@ -90,10 +238,32 @@ class HybridConnectionListener():
                 else:
                     rendezvous_conn.send(json.dumps({'response':response}))
 
+                #with self.notification_lock:
+
+
                 if rendezvous_conn:
                     rendezvous_conn.close()
                     rendezvous_conn = None
                     from_rendezvous = False
+
+    def wait(self, id, timeout=None):
+
+        with self.notification_lock:
+            if id in self.notification:
+                LOG.debug(f"notitication was already received for {id}")
+                return self.notification[id]
+            else:
+                LOG.debug(f"notification was not received yet {id}")
+                wait_event = threading.Event()
+                self.notification[id] = wait_event
+            
+        LOG.debug(f"waiting for notification {id}")
+        wait_event.wait(timeout)
+        with self.notification_lock:
+            if isinstance(self.notification[id], threading.Event):
+                return None
+            return self.notification[id]
+
         
 
     @staticmethod
