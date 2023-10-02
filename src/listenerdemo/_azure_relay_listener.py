@@ -238,7 +238,7 @@ class HybridConnectionListener():
                         self.reconnect()
                         event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
 
-                    LOG.debug(f"Received event for {request['id']} event: {request}")
+                    LOG.debug(f"Received event for {request['id']} event: {request} at {datetime.now(timezone.utc)}")
                     json_event = json.loads(event)
                     print(event)
                     wait_event = None
