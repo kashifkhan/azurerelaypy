@@ -251,16 +251,16 @@ class HybridConnectionListener():
                             id = f"{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[1]}/{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[2]}"
                             status = json_event[0]['data']['operationalInfo']['operationalStatus']['status']
                             self.last_id = id
-                        # else:
-                        #     id = self.last_id
-                        #     status = 'Created'
+                        else:
+                            id = self.last_id
+                            status = 'Created'
 
-                        # if status == 'Creating' or status == 'Created':
-                        #     self.update_count += 1
-                        #     if self.update_count == 2:
-                        #         LOG.debug(f"Creating was seen again {datetime.now(timezone.utc)}")
+                        if status == 'Creating' or status == 'Created':
+                            self.update_count += 1
+                            if self.update_count == 2:
+                                LOG.debug(f"Creating was seen again {datetime.now(timezone.utc)}")
                             
-                        if status == 'Created' or self.update_count > 1:
+                        if status == 'Succeeded' or self.update_count > 1:
                             with self.notification_lock:
                                 LOG.debug(f"storing notification for {id} status: {status} at {datetime.now(timezone.utc)}")
                                 if id in self.notification:
@@ -273,7 +273,7 @@ class HybridConnectionListener():
 
                 response = {
                     'requestId': request['id'],
-                    'body': False,
+                    'body': True,
                     'statusCode': '200',
                     'responseHeaders': {'content-type': 'text/html'},
                 }
