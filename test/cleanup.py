@@ -13,4 +13,8 @@ storage_account = os.environ['STORAGE_ACCOUNT']
 
 client = azure.mgmt.storage.StorageManagementClient(DefaultAzureCredential(), subscription_id, base_url=base_url)
 for i in range(20):
-    client.storage_accounts.delete(resource_group_name, f'{storage_account}{i}')
+    try:
+        client.storage_accounts.delete(resource_group_name, f'{storage_account}{i}')
+        print(f'deleted {storage_account}{i}')
+    except (Exception, BaseException) as e:
+        print(f"Could not delete {storage_account}{i} because {e}")

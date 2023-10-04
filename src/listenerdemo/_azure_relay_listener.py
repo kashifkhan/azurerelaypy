@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import json
 import threading
 import time
@@ -167,7 +168,9 @@ class HybridConnectionListener():
                 self.control_conn.ping()
                 LOG.debug(f"Sent ping to control websocket {self.listener_url}")
             except Exception as e:
-                self.control_conn.close()
+                LOG.debug(f"Failed to send ping to {self.listener_url}")
+                self.reconnect()
+                self.control_conn.ping()
                 raise Exception(f"Failed to send ping to {self.listener_url}") from e
             time.sleep(self.ping_interval)
 
@@ -176,6 +179,14 @@ class HybridConnectionListener():
         self.control_conn.close()
         self.ping_thread.join()
         LOG.debug(f"Closed control websocket {self.listener_url}")
+
+    def reconnect(self):
+        try:
+            self.control_conn.close()
+            self.control_conn = create_connection(self.listener_url)
+            LOG.debug(f"reconnected to control websocket {self.listener_url}")
+        except Exception as e:
+            raise Exception(f"failed to reconnect to {self.listener_url}") from e
 
     def open(self):
         try:
@@ -196,14 +207,24 @@ class HybridConnectionListener():
         keep_running = True
         from_rendezvous = False
         rendezvous_conn = None
+        self.update_count = 0
 
         while keep_running:
-            response = self.control_conn.recv()
+            LOG.debug(f"Waiting for request from control websocket at {datetime.now(timezone.utc)}")
+            try:
+                response = self.control_conn.recv()
+                LOG.debug(f"Received request from control websocket at {datetime.now(timezone.utc)}")
+            except Exception as e:
+                LOG.debug(f"Failed to receive request {e} at {datetime.now(timezone.utc)}")
+                self.reconnect()
+                LOG.debug("Waiting for request from control websocket after reconnect")
+                response = self.control_conn.recv()
             
+            print(response)
             request = json.loads(response)["request"]
 
             if request:
-                LOG.debug(f"Received request from control websocket")
+                LOG.debug(f"Received request from control websocket at {datetime.now(timezone.utc)}")
                 if 'method' not in request: # This means we have to rendezvous to get the rest
                     LOG.debug(f"connecting to rendezvous websocket")
                     rendezvous_conn = create_connection(request['address'])
@@ -213,28 +234,54 @@ class HybridConnectionListener():
                     from_rendezvous = True
                 
                 if request['body']:
-                    event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
+                    LOG.debug(f"Received body from {request['id']} at {datetime.now(timezone.utc)}, waiting on event")
+                    try:
+                        event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
+                    except Exception as e:
+                        LOG.debug(f"Failed to receive event {request['id']} {e}")
+                        self.reconnect()
+                        event = self.control_conn.recv() if not from_rendezvous else rendezvous_conn.recv()
+
+                    LOG.debug(f"Received event for {request['id']} event: {request} at {datetime.now(timezone.utc)}")
                     json_event = json.loads(event)
+                    print(event)
                     wait_event = None
                     if 'operationalInfo' in json_event[0]['data']:
-                        id = f"{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[1]}/{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[2]}"
-                        LOG.debug(f"Received an event for {id}")
-                        with self.notification_lock:
-                            LOG.debug(f"storing notification for {id}")
-                            if id in self.notification:
-                                wait_event = self.notification[id]
-                            self.notification[id] = json_event
-                            if wait_event:
-                                wait_event.set()
+                        if 'operationalStatus' in json_event[0]['data']['operationalInfo']:
+                            id = f"{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[1]}/{json_event[0]['data']['operationalInfo']['operationalStatus']['contexts'][0].split(',')[1].split(';')[0].split('/')[2]}"
+                            status = json_event[0]['data']['operationalInfo']['operationalStatus']['status']
+                            self.last_id = id
+                        # else:
+                        #     id = self.last_id
+                        #     status = 'Created'
+
+                        # if status == 'Creating' or status == 'Created':
+                        #     self.update_count += 1
+                        #     if self.update_count == 2:
+                        #         LOG.debug(f"Creating was seen again {datetime.now(timezone.utc)}")
+                            
+                        if status == 'Created' or self.update_count > 1:
+                            with self.notification_lock:
+                                LOG.debug(f"storing notification for {id} status: {status} at {datetime.now(timezone.utc)}")
+                                if id in self.notification:
+                                    wait_event = self.notification[id]
+                                self.notification[id] = json_event
+                                if wait_event:
+                                    wait_event.set()
+                        else:
+                            LOG.debug(f"Received an event for {id} but the status was {status} at {datetime.now(timezone.utc)}")
 
                 response = {
                     'requestId': request['id'],
-                    'body': True,
+                    'body': False,
                     'statusCode': '200',
                     'responseHeaders': {'content-type': 'text/html'},
                 }
                 if not from_rendezvous: #TODO if response is over 64kb we need to use rendezvous
+                    LOG.debug(f"Sending response for {request['id']} at {datetime.now(timezone.utc)}")
+                    print(json.dumps({'response':response}))
                     self.control_conn.send(json.dumps({'response':response}))
+                    LOG.debug(f"Sent response for {request['id']} at {datetime.now(timezone.utc)}")
                 else:
                     rendezvous_conn.send(json.dumps({'response':response}))
 
@@ -253,11 +300,11 @@ class HybridConnectionListener():
                 LOG.debug(f"notitication was already received for {id}")
                 return self.notification[id]
             else:
-                LOG.debug(f"notification was not received yet {id}")
+                LOG.debug(f"notification was not received yet {id} at {datetime.now(timezone.utc)}")
                 wait_event = threading.Event()
                 self.notification[id] = wait_event
             
-        LOG.debug(f"waiting for notification {id}")
+        LOG.debug(f"waiting for notification {id} at {datetime.now(timezone.utc)}")
         wait_event.wait(timeout)
         with self.notification_lock:
             if isinstance(self.notification[id], threading.Event):

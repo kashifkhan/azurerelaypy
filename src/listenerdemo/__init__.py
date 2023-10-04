@@ -28,16 +28,15 @@ class RelayArmPollerMixin(LROBasePolling):
         if self.use_relay:
             id = self._initial_response.http_request.headers['x-ms-operation-identifier']
             LOG.debug(f"Waiting for relay to fire for {id}")
-            notification = self._client.hybrid_connection_listener.wait(id, 60)
-            self._client.event_time = datetime.fromisoformat(notification[0]['eventTime'])
-            #self._client.event_time = dateutil.parser.isoparse(notification[0]['eventTime'])
+            notification = self._client.hybrid_connection_listener.wait(id, 600) # fallback to poll time
+            LOG.debug("Either we got a response or we timed out")
             if notification is None:
                 LOG.debug(f"Relay did not fire for {id}, falling back polling")
                 self.use_relay = False
             else:
-                LOG.debug(f"Relay recieved notification {id}")
+                self._client.event_time = datetime.fromisoformat(notification[0]['eventTime'])
+                LOG.debug(f"Relay recieved notification {id} at {self._client.event_time}")
         super()._poll()
-
 
 def make_notification_session_aware(client_type):
     class SessionManagementClient(client_type):
